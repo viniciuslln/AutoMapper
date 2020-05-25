@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using AutoMapper.Internal;
 
 namespace AutoMapper.Internal
@@ -12,7 +13,7 @@ namespace AutoMapper.Internal
     public static class ExpressionExtensions
     {
         public static Expression Chain(this IEnumerable<Expression> expressions, Expression parameter) => expressions.Aggregate(parameter,
-            (left, right) => right is LambdaExpression lambda ? lambda.ReplaceParameters(left) : right.GetMembersChain().MemberAccesses(left));
+            (left, right) => right is LambdaExpression lambda ? lambda.ReplaceParameters(left) : right.Replace(right.GetChain().FirstOrDefault().Target, left));
         public static LambdaExpression Lambda(this IEnumerable<MemberInfo> members)
         {
             var source = Parameter(members.First().DeclaringType, "source");
@@ -39,35 +40,50 @@ namespace AutoMapper.Internal
             return GetMembersCore().Reverse();
             IEnumerable<Member> GetMembersCore()
             {
+                Expression target;
                 while (expression != null)
                 {
-                    if (expression is MemberExpression member)
+                    switch (expression)
                     {
-                        yield return new Member(expression, member.Member);
-                        expression = member.Expression;
+                        case MemberExpression member:
+                            target = member.Expression;
+                            yield return new Member(expression, member.Member, target);
+                            break;
+                        case MethodCallExpression methodCall:
+                            var method = methodCall.Method;
+                            if (method.IsStatic)
+                            {
+                                var parameters = method.GetParameters();
+                                if (parameters.Length == 0 || !method.Has<ExtensionAttribute>())
+                                {
+                                    yield break;
+                                }
+                                target = methodCall.Arguments[0];
+                            }
+                            else
+                            {
+                                target = methodCall.Object;
+                            }
+                            yield return new Member(expression, method, target);
+                            break;
+                        default:
+                            yield break;
                     }
-                    else if (expression is MethodCallExpression method)
-                    {
-                        yield return new Member(expression, method.Method);
-                        expression = method.Object ?? method.Arguments[0];
-                    }
-                    else
-                    {
-                        break;
-                    }
+                    expression = target;
                 }
             }
         }
         public readonly struct Member
         {
-            public Member(Expression expression, MemberInfo memberInfo)
+            public Member(Expression expression, MemberInfo memberInfo, Expression target)
             {
                 Expression = expression;
                 MemberInfo = memberInfo;
+                Target = target;
             }
-
             public Expression Expression { get; }
             public MemberInfo MemberInfo { get; }
+            public Expression Target { get; }
         }
         public static IEnumerable<MemberExpression> GetMemberExpressions(this Expression expression)
         {
